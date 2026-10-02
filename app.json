@@ -1,29 +1,31 @@
 {
   "expo": {
-    "name": "genz-app",
-    "slug": "snack-70891138-6a53-423f-94bd-24f20022d637",
+    "name": "Loot",
+    "slug": "loot",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./icon.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
-      "image": "./assets/splash-icon.png",
+      "image": "./splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
-    },
-    "ios": {
-      "supportsTablet": true
+      "backgroundColor": "#FFF9F0"
     },
     "android": {
+      "package": "com.mital1999.loot",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "foregroundImage": "./adaptive-icon.png",
+        "backgroundColor": "#FFF9F0"
       },
       "edgeToEdgeEnabled": true
     },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.mital1999.loot"
+    },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./favicon.png"
     }
   }
 }
