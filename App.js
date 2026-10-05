@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
-  SafeAreaView,
   View,
   Text,
   ScrollView,
@@ -9,8 +8,10 @@ import {
   StyleSheet,
   StatusBar,
   Linking,
-  Platform,
+  useWindowDimensions,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // ---------------------------------------------
 // THEME — bright, Gen Z, high contrast
@@ -44,6 +45,14 @@ const APP_TAGLINE = "level up your money game 🎮";
 const STARTING_CASH = 10000;
 const XP_PER_TRADE = 20;
 const XP_PER_LEVEL = 100;
+const NAV_BUTTON_SIZE = 42;
+
+const MAIN_TABS = [
+  { key: 'market', label: 'Market', icon: 'bar-chart-outline' },
+  { key: 'watchlist', label: 'Watchlist', icon: 'bookmark-outline' },
+  { key: 'paperTrade', label: 'Paper Trading', icon: 'game-controller-outline' },
+  { key: 'perks', label: 'Perks', icon: 'gift-outline' },
+];
 
 // ---------------------------------------------
 // LEVEL SYSTEM
@@ -79,6 +88,24 @@ function formatMoney(n) {
   return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function formatQuoteTime(date) {
+  if (!date) return 'recently';
+  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function getQuoteStatus({ loading, failedTickers, tickers, liveMap, updatedAt }) {
+  if (!LIVE_DATA_ENABLED) return { text: 'Sample prices · live quotes are not configured', error: true };
+  const liveCount = tickers.filter((ticker) => liveMap[ticker]).length;
+  if (loading) return { text: 'Updating prices…', error: false };
+  if (failedTickers.length > 0 && liveCount > 0) {
+    return { text: `Some quotes unavailable · showing sample prices · last update ${formatQuoteTime(updatedAt)}`, error: true };
+  }
+  if (failedTickers.length > 0 || (tickers.length > 0 && liveCount === 0)) {
+    return { text: 'Live prices unavailable · showing sample prices', error: true };
+  }
+  return { text: `Live quotes · updated ${formatQuoteTime(updatedAt)}`, error: false };
+}
+
 // ---------------------------------------------
 // LIVE DATA — fetches real price/change/range/volume from
 // your deployed backend (see api/quote.js). Falls back to the
@@ -89,7 +116,7 @@ function formatMoney(n) {
 // real Vercel URL, e.g. 'https://loot-backend.vercel.app'
 // ---------------------------------------------
 const BACKEND_URL = 'https://loot-backend.vercel.app';
-const LIVE_DATA_ENABLED = !BACKEND_URL.includes('YOUR-PROJECT-NAME');
+const LIVE_DATA_ENABLED = BACKEND_URL.startsWith('https://');
 
 async function fetchLiveQuote(ticker) {
   const res = await fetch(`${BACKEND_URL}/api/quote?ticker=${encodeURIComponent(ticker)}`);
@@ -104,10 +131,16 @@ async function fetchLiveQuote(ticker) {
 function useLiveQuotes(tickers) {
   const [liveMap, setLiveMap] = useState({});
   const [loading, setLoading] = useState(false);
+  const [failedTickers, setFailedTickers] = useState([]);
+  const [updatedAt, setUpdatedAt] = useState(null);
   const tickerKey = tickers.join(',');
 
   useEffect(() => {
-    if (!LIVE_DATA_ENABLED || tickers.length === 0) return;
+    if (!LIVE_DATA_ENABLED || tickers.length === 0) {
+      setLoading(false);
+      setFailedTickers([]);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
 
@@ -120,10 +153,14 @@ function useLiveQuotes(tickers) {
     ).then((results) => {
       if (cancelled) return;
       const next = {};
+      const failed = [];
       results.forEach(({ t, data }) => {
-        if (data) next[t] = data;
+        if (data && parsePrice(data.price) > 0) next[t] = { ...data, receivedAt: new Date().toISOString() };
+        else failed.push(t);
       });
       setLiveMap((prev) => ({ ...prev, ...next }));
+      setFailedTickers(failed);
+      if (Object.keys(next).length > 0) setUpdatedAt(new Date());
       setLoading(false);
     });
 
@@ -132,7 +169,7 @@ function useLiveQuotes(tickers) {
     };
   }, [tickerKey]);
 
-  return { liveMap, loading };
+  return { liveMap, loading, failedTickers, updatedAt };
 }
 
 // Merges live data (price/change/positive/stats) onto a static
@@ -140,9 +177,11 @@ function useLiveQuotes(tickers) {
 // static mock numbers if live data isn't available yet.
 function withLiveData(asset, liveMap) {
   const live = liveMap[asset.ticker];
-  if (!live) return asset;
+  if (!live) return { ...asset, quoteSource: 'sample' };
   return {
     ...asset,
+    quoteSource: 'live',
+    quoteUpdatedAt: live.receivedAt,
     price: live.price,
     change: live.change,
     positive: live.positive,
@@ -371,12 +410,6 @@ const BROKERAGES = [
   { name: 'Robinhood', emoji: '🏹', perk: 'Simple app, no account minimums', link: 'https://www.robinhood.com' },
 ];
 
-const CREDIT_CARDS = [
-  { name: 'CashBack Rewards Card', emoji: '💳', perk: 'Up to 5% cashback on food delivery & subscriptions', link: 'https://example.com/cashback-card' },
-  { name: 'Student Travel Card', emoji: '✈️', perk: 'No annual fee, air miles on everyday spend', link: 'https://example.com/travel-card' },
-  { name: 'Everyday Spend Card', emoji: '🛍️', perk: 'Flat cashback, zero paperwork signup', link: 'https://example.com/everyday-card' },
-];
-
 // ---------------------------------------------
 // LEVEL / XP UI PIECES
 // ---------------------------------------------
@@ -541,7 +574,7 @@ function PercentBadge({ change, positive }) {
   );
 }
 
-function StockCard({ stock, accentColor, onPress, onRemove, ownedShares }) {
+function StockCard({ stock, accentColor, onPress, onRemove, ownedShares, quoteLabel }) {
   return (
     <TouchableOpacity
       style={[styles.card, { borderColor: accentColor || COLORS.cardBorder }]}
@@ -559,6 +592,9 @@ function StockCard({ stock, accentColor, onPress, onRemove, ownedShares }) {
 
       <View style={styles.priceTagRow}>
         <Text style={styles.price}>{stock.price}</Text>
+        <Text style={styles.quoteFreshness}>
+          {quoteLabel || (stock.quoteSource === 'live' ? `Live · ${formatQuoteTime(stock.quoteUpdatedAt ? new Date(stock.quoteUpdatedAt) : null)}` : 'Sample price')}
+        </Text>
         {stock.tag ? (
           <View style={[styles.emojiTag, { backgroundColor: accentColor || COLORS.violet }]}>
             <Text style={styles.emojiTagText}>{stock.tag}</Text>
@@ -624,6 +660,9 @@ function StockDetailScreen({ stock, onBack }) {
           <Text style={styles.detailPrice}>{stock.price}</Text>
           <PercentBadge change={stock.change} positive={stock.positive} />
         </View>
+        <Text style={styles.quoteFreshness}>
+          {stock.quoteSource === 'live' ? `Live · updated ${formatQuoteTime(stock.quoteUpdatedAt ? new Date(stock.quoteUpdatedAt) : null)}` : 'Sample price · live quote unavailable'}
+        </Text>
       </View>
 
       <View style={styles.statsRow}>
@@ -776,7 +815,11 @@ function MarketScreen({ onSelectStock }) {
     [activeVibe]
   );
   const tickers = useMemo(() => activeStocks.map((s) => s.ticker), [activeStocks]);
-  const { liveMap, loading } = useLiveQuotes(tickers);
+  const { liveMap, loading, failedTickers, updatedAt } = useLiveQuotes(tickers);
+  const quoteLabel = (ticker) => !LIVE_DATA_ENABLED ? 'Sample price' : liveMap[ticker]
+    ? `${failedTickers.includes(ticker) ? 'Stale' : 'Live'} · ${formatQuoteTime(new Date(liveMap[ticker].receivedAt || updatedAt))}`
+    : 'Sample price';
+  const statusMessage = getQuoteStatus({ loading, failedTickers, tickers, liveMap, updatedAt });
 
   return (
     <>
@@ -798,11 +841,7 @@ function MarketScreen({ onSelectStock }) {
         })}
       </View>
 
-      {LIVE_DATA_ENABLED && (
-        <Text style={styles.liveStatusText}>
-          {loading ? '🔄 Pulling live prices...' : '🟢 Live prices'}
-        </Text>
-      )}
+      <Text style={[styles.liveStatusText, statusMessage.error && styles.quoteErrorText]}>{statusMessage.text}</Text>
 
       <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         {activeStocks.map((stock) => (
@@ -810,6 +849,7 @@ function MarketScreen({ onSelectStock }) {
             key={stock.ticker}
             stock={withLiveData(stock, liveMap)}
             accentColor={activeVibeObj.color}
+            quoteLabel={quoteLabel(stock.ticker)}
             onPress={(s) => onSelectStock(withLiveData(s, liveMap))}
           />
         ))}
@@ -833,7 +873,8 @@ function WatchlistScreen({ onSelectStock, watchlist, setWatchlist }) {
   }, [query, watchlist]);
 
   const watchedAssets = watchlist.map((t) => ASSETS[t]).filter(Boolean);
-  const { liveMap, loading } = useLiveQuotes(watchlist);
+  const { liveMap, loading, failedTickers, updatedAt } = useLiveQuotes(watchlist);
+  const quoteStatus = getQuoteStatus({ loading, failedTickers, tickers: watchlist, liveMap, updatedAt });
 
   const addToWatchlist = (ticker) => {
     setWatchlist((prev) => (prev.includes(ticker) ? prev : [...prev, ticker]));
@@ -881,13 +922,20 @@ function WatchlistScreen({ onSelectStock, watchlist, setWatchlist }) {
           ))}
         </View>
       )}
+      {query.trim() && searchResults.length === 0 && (
+        <Text style={styles.emptyWatchlistText}>
+          {Object.values(ASSETS).some((a) => a.ticker.toLowerCase().includes(query.trim().toLowerCase()) || a.name.toLowerCase().includes(query.trim().toLowerCase()))
+            ? 'Those matches are already in your watchlist.'
+            : 'No matching stocks or indices found in Loot’s current list.'}
+        </Text>
+      )}
 
       <View style={styles.sectionHeadingRow}>
         <Text style={styles.sectionHeading}>
           {watchedAssets.length > 0 ? '📌 Your Watchlist' : '📌 Nothing added yet'}
         </Text>
-        {LIVE_DATA_ENABLED && watchedAssets.length > 0 && (
-          <Text style={styles.liveStatusTextInline}>{loading ? '🔄 updating...' : '🟢 live'}</Text>
+        {watchedAssets.length > 0 && (
+          <Text style={[styles.liveStatusTextInline, quoteStatus.error && styles.quoteErrorText]}>{quoteStatus.text}</Text>
         )}
       </View>
 
@@ -902,6 +950,9 @@ function WatchlistScreen({ onSelectStock, watchlist, setWatchlist }) {
             stock={withLiveData(stock, liveMap)}
             onPress={(s) => onSelectStock(withLiveData(s, liveMap))}
             onRemove={removeFromWatchlist}
+            quoteLabel={!LIVE_DATA_ENABLED ? 'Sample price' : liveMap[stock.ticker]
+              ? `${failedTickers.includes(stock.ticker) ? 'Stale' : 'Live'} · ${formatQuoteTime(new Date(liveMap[stock.ticker].receivedAt || updatedAt))}`
+              : 'Sample price'}
           />
         ))
       )}
@@ -995,6 +1046,9 @@ function PaperTradingScreen({ onSelectTradeStock, cash, holdings, xp, onReset })
           ))}
         </View>
       )}
+      {query.trim() && searchResults.length === 0 && (
+        <Text style={styles.emptyWatchlistText}>No matching stocks or indices found in Loot’s current list.</Text>
+      )}
 
       <Text style={styles.sectionHeading}>
         {holdingEntries.length > 0 ? "🎒 What's In Your Bag" : "🎒 Your Bag Is Empty"}
@@ -1043,11 +1097,6 @@ function PerksScreen() {
         <PerkCard key={b.name} item={b} kind="brokerage" />
       ))}
 
-      <Text style={styles.sectionHeading}>💳 Credit Cards</Text>
-      {CREDIT_CARDS.map((c) => (
-        <PerkCard key={c.name} item={c} kind="card" />
-      ))}
-
       <View style={{ height: 24 }} />
     </ScrollView>
   );
@@ -1057,6 +1106,25 @@ function PerksScreen() {
 // APP
 // ---------------------------------------------
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppContent />
+    </SafeAreaProvider>
+  );
+}
+
+function AppContent() {
+  const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
+  const safeAreaHeight = Math.max(0, windowHeight - insets.top - insets.bottom);
+  const navButtonSize = Math.max(36, Math.min(NAV_BUTTON_SIZE, windowHeight * 0.055));
+  const navGap = Math.max(8, Math.min(14, windowHeight * 0.018));
+  const navStackHeight = navButtonSize * MAIN_TABS.length + navGap * (MAIN_TABS.length - 1);
+  const navTop = Math.max(
+    0,
+    Math.min(safeAreaHeight - navStackHeight, safeAreaHeight * 0.6 - navStackHeight / 2)
+  );
+
   const [appStage, setAppStage] = useState('loading'); // loading | home | signup | main
   const [mainTab, setMainTab] = useState('market');
   const [selectedStock, setSelectedStock] = useState(null); // data-view detail (Market/Watchlist)
@@ -1203,19 +1271,32 @@ export default function App() {
       </View>
 
       {!selectedStock && !tradingStock && (
-        <View style={styles.bottomNav}>
-          <TouchableOpacity style={styles.bottomNavItem} onPress={() => setMainTab('market')} activeOpacity={0.8}>
-            <Text style={[styles.bottomNavText, mainTab === 'market' && styles.bottomNavTextActive]}>📊 Market</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.bottomNavItem} onPress={() => setMainTab('watchlist')} activeOpacity={0.8}>
-            <Text style={[styles.bottomNavText, mainTab === 'watchlist' && styles.bottomNavTextActive]}>📌 Watch</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.bottomNavItem} onPress={() => setMainTab('paperTrade')} activeOpacity={0.8}>
-            <Text style={[styles.bottomNavText, mainTab === 'paperTrade' && styles.bottomNavTextActive]}>🎮 Trade</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.bottomNavItem} onPress={() => setMainTab('perks')} activeOpacity={0.8}>
-            <Text style={[styles.bottomNavText, mainTab === 'perks' && styles.bottomNavTextActive]}>💸 Perks</Text>
-          </TouchableOpacity>
+        <View style={[styles.floatingNav, { top: navTop, gap: navGap }]}>
+          {MAIN_TABS.map((tab) => {
+            const isActive = mainTab === tab.key;
+            return (
+              <TouchableOpacity
+                key={tab.key}
+                style={[
+                  styles.floatingNavButton,
+                  { width: navButtonSize, height: navButtonSize, borderRadius: navButtonSize / 2 },
+                  isActive ? styles.floatingNavButtonActive : styles.floatingNavButtonInactive,
+                ]}
+                onPress={() => setMainTab(tab.key)}
+                activeOpacity={0.78}
+                hitSlop={6}
+                accessibilityRole="tab"
+                accessibilityLabel={tab.label}
+                accessibilityState={{ selected: isActive }}
+              >
+                <Ionicons
+                  name={tab.icon}
+                  size={21}
+                  color={isActive ? '#FFFFFF' : COLORS.violet}
+                />
+              </TouchableOpacity>
+            );
+          })}
         </View>
       )}
     </SafeAreaView>
@@ -1229,7 +1310,6 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: COLORS.bg,
-    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0,
   },
   centerAll: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: 28 },
 
@@ -1302,7 +1382,7 @@ const styles = StyleSheet.create({
   vibeTabTextActive: { color: '#FFFFFF' },
 
   scroll: { flex: 1 },
-  scrollContent: { paddingHorizontal: 16, paddingTop: 8 },
+  scrollContent: { paddingLeft: 16, paddingRight: 76, paddingTop: 8 },
 
   // Stock card
   card: {
@@ -1383,6 +1463,8 @@ const styles = StyleSheet.create({
   },
   liveStatusText: { color: COLORS.green, fontSize: 11, fontWeight: '800', paddingHorizontal: 16, marginTop: 8 },
   liveStatusTextInline: { color: COLORS.green, fontSize: 11, fontWeight: '800' },
+  quoteErrorText: { color: COLORS.red },
+  quoteFreshness: { color: COLORS.textMuted, fontSize: 9.5, fontWeight: '700', marginLeft: 7, alignSelf: 'center' },
   perkCard: {
     backgroundColor: COLORS.card, borderRadius: 20, borderWidth: 2, borderColor: COLORS.electricBlue,
     padding: 16, marginTop: 10,
@@ -1454,14 +1536,27 @@ const styles = StyleSheet.create({
   deepDiveHeading: { color: COLORS.hotPink, fontSize: 13.5, fontWeight: '900', marginBottom: 8, letterSpacing: 0.3 },
   deepDiveText: { color: COLORS.textSecondary, fontSize: 13.5, lineHeight: 21, fontWeight: '600' },
 
-  // Disclaimer + bottom nav
+  // Disclaimer + floating side navigation
   disclaimerBanner: { backgroundColor: COLORS.ink, paddingHorizontal: 16, paddingVertical: 8 },
   disclaimerText: { color: '#FFFFFF', fontSize: 10, lineHeight: 13, textAlign: 'center', fontWeight: '700' },
-  bottomNav: {
-    flexDirection: 'row', backgroundColor: COLORS.card, borderTopWidth: 2, borderTopColor: COLORS.cardBorder,
-    paddingVertical: 10, paddingBottom: Platform.OS === 'ios' ? 20 : 10,
+  floatingNav: {
+    position: 'absolute',
+    right: 12,
+    alignItems: 'center',
+    zIndex: 10,
   },
-  bottomNavItem: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  bottomNavText: { color: COLORS.textMuted, fontSize: 11.5, fontWeight: '800' },
-  bottomNavTextActive: { color: COLORS.hotPink },
+  floatingNavButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    boxShadow: '0px 2px 7px rgba(26, 19, 48, 0.16)',
+  },
+  floatingNavButtonActive: {
+    backgroundColor: 'rgba(255, 45, 149, 0.88)',
+    borderColor: COLORS.hotPink,
+  },
+  floatingNavButtonInactive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.78)',
+    borderColor: 'rgba(46, 33, 69, 0.16)',
+  },
 });
